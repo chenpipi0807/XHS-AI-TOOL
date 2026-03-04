@@ -1,0 +1,14 @@
+cd Tool
+
+# 安装依赖
+pip install -r requirements.txt
+
+# 启动 XHS MCP 服务器（另开终端，在 MCP/ 目录）
+python main.py
+
+# 启动 SQLite MCP 服务器（另开终端，在 Tool/ 目录）
+python mcp_sqlite/sqlite_mcp_server.py
+
+# 启动主应用
+python cli.py
+
