@@ -188,20 +188,35 @@ def generate_image(
             contents.append({"role": "user", "parts": [{"text": prompt}]})
         else:
             parts: List[Dict[str, Any]] = []
-            if prompt:
-                parts.append({"text": prompt})
 
-            # 添加参考图
+            # ── 参考图放在 prompt 之前（图生图正确格式）────────────────
+            loaded_ref_count = 0
             if ref_image_paths:
-                for img_path in ref_image_paths:
-                    if not os.path.exists(img_path):
-                        logger.warning(f"[gemini_image] 参考图不存在: {img_path}")
+                logger.info(f"[gemini_image:{request_id}] ===== 参考图传入详情 =====")
+                logger.info(f"[gemini_image:{request_id}] 共 {len(ref_image_paths)} 张参考图")
+                for idx, img_path in enumerate(ref_image_paths):
+                    abs_path = os.path.abspath(img_path)
+                    exists = os.path.exists(abs_path)
+                    logger.info(f"[gemini_image:{request_id}] 参考图[{idx}]: {abs_path} | 存在={exists}")
+                    if not exists:
+                        logger.warning(f"[gemini_image:{request_id}] ⚠️ 参考图不存在，跳过: {abs_path}")
                         continue
                     try:
-                        mime, b64 = _read_file_b64(img_path)
+                        file_size = os.path.getsize(abs_path)
+                        mime, b64 = _read_file_b64(abs_path)
+                        logger.info(f"[gemini_image:{request_id}] ✅ 参考图[{idx}] 读取成功: mime={mime}, 文件大小={file_size}字节, base64长度={len(b64)}")
                         parts.append({"inlineData": {"mimeType": mime, "data": b64}})
+                        loaded_ref_count += 1
                     except Exception as e:
-                        logger.warning(f"[gemini_image] 读取参考图失败 {img_path}: {e}")
+                        logger.warning(f"[gemini_image:{request_id}] ❌ 读取参考图失败 {abs_path}: {e}")
+                logger.info(f"[gemini_image:{request_id}] 参考图加载完成: {loaded_ref_count}/{len(ref_image_paths)} 张成功加入请求")
+                logger.info(f"[gemini_image:{request_id}] ===========================")
+            else:
+                logger.info(f"[gemini_image:{request_id}] 无参考图（纯文生图模式）")
+
+            # 文字 prompt 放在图片之后
+            if prompt:
+                parts.append({"text": prompt})
 
             contents = [{"role": "user", "parts": parts}]
 
@@ -214,6 +229,7 @@ def generate_image(
             "contents": contents,
             "generationConfig": {
                 "temperature": temperature,
+                "responseModalities": ["TEXT", "IMAGE"],  # 必须显式声明输出包含图像
                 "imageConfig": image_config,
             },
         }
@@ -229,7 +245,28 @@ def generate_image(
         }
         timeout = 600 if ref_image_paths else 300
 
-        logger.info(f"[gemini_image:{request_id}] POST {api_url} model={model} size={image_size} ratio={aspect_ratio}")
+        # ── 发送前打印 payload 摘要（不含 base64 数据）──────────────
+        user_parts = contents[0].get("parts", []) if contents else []
+        text_parts_count = sum(1 for p in user_parts if "text" in p)
+        image_parts_count = sum(1 for p in user_parts if "inlineData" in p)
+        logger.info(
+            f"[gemini_image:{request_id}] POST {api_url} model={model} "
+            f"size={image_size} ratio={aspect_ratio} "
+            f"| parts总数={len(user_parts)} (文本={text_parts_count}, 参考图inlineData={image_parts_count})"
+        )
+        print(
+            f"\n🖼️  [gemini_image:{request_id}] 生图请求摘要:\n"
+            f"   模型: {model}\n"
+            f"   URL:  {api_url}\n"
+            f"   参数: size={image_size}, ratio={aspect_ratio}\n"
+            f"   Parts: 总计={len(user_parts)}, 文本={text_parts_count}, 参考图={image_parts_count}\n"
+            + (
+                "   ✅ 参考图已加入请求\n"
+                if image_parts_count > 0
+                else "   ⚠️  无参考图（纯文生图）\n"
+            ),
+            flush=True
+        )
 
         try:
             response = requests.post(api_url, headers=headers, json=payload, timeout=timeout)

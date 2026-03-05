@@ -208,18 +208,31 @@ async def list_tools() -> list[Tool]:
                 "返回本地文件路径列表，可直接用于笔记发布。"
                 "小红书漫画必须使用 aspect_ratio=9:16（竖版）。"
                 "用 path 参数指定保存文件名，例如 lol_comic/ep02/page_01.png。"
+                "【重要】生成角色图片时，务必通过 ref_image_paths 传入 IP_REF 目录下对应角色的参考图，"
+                "最多可传 20 张，Gemini 会以参考图为基准生成风格一致的角色。"
+                "参考图绝对路径可通过 list_project_files 或 list_dir_tree 查询 IP_REF 子目录获取。"
             ),
             inputSchema={
                 "type": "object",
                 "required": ["prompt"],
                 "properties": {
-                    "prompt":       {"type": "string",  "description": "图片生成提示词（英文），末尾必须包含 aspect ratio 9:16, portrait orientation, vertical"},
-                    "path":         {"type": "string",  "description": "保存路径（相对于 projects/），例如 lol_comic/ep02/page_01.png。不传则自动命名。"},
-                    "project_id":   {"type": "integer", "description": "关联项目 ID（可选）"},
-                    "aspect_ratio": {"type": "string",  "enum": ["1:1","16:9","9:16","4:3","3:4"],
-                                     "description": "宽高比，小红书漫画必须用 9:16"},
-                    "count":        {"type": "integer", "description": "生成数量，默认 1，最多 4（指定 path 时仅生成 1 张）"},
-                    "post_id":      {"type": "integer", "description": "关联笔记 ID（可选）"},
+                    "prompt":          {"type": "string",  "description": "图片生成提示词（英文），末尾必须包含 aspect ratio 9:16, portrait orientation, vertical"},
+                    "path":            {"type": "string",  "description": "保存路径（相对于 projects/），例如 lol_comic/ep02/page_01.png。不传则自动命名。"},
+                    "project_id":      {"type": "integer", "description": "关联项目 ID（可选）"},
+                    "aspect_ratio":    {"type": "string",  "enum": ["1:1","16:9","9:16","4:3","3:4"],
+                                       "description": "宽高比，小红书漫画必须用 9:16"},
+                    "count":           {"type": "integer", "description": "生成数量，默认 1，最多 4（指定 path 时仅生成 1 张）"},
+                    "post_id":         {"type": "integer", "description": "关联笔记 ID（可选）"},
+                    "ref_image_paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "参考图绝对路径列表（最多 20 张）。"
+                            "生成漫画角色时必须传入，路径指向 IP_REF 目录下对应角色的参考图。"
+                            "例如：[\"/abs/path/to/projects/IP_REF/xiaopalu_main_character_0.png\"]。"
+                            "可先用 list_dir_tree(subdir='IP_REF') 查询所有参考图的绝对路径。"
+                        ),
+                    },
                 },
             },
         ),
@@ -642,11 +655,12 @@ def _safe_path(rel_path: str) -> Path | None:
 
 
 def _tool_generate_image(args: dict) -> list[TextContent]:
-    prompt       = args.get("prompt", "").strip()
-    rel_path     = args.get("path", "").strip()   # 用户指定的保存路径，如 lol_comic/ep02/page_01.png
-    project_id   = args.get("project_id")
-    aspect_ratio = args.get("aspect_ratio", "9:16")
-    post_id      = args.get("post_id")
+    prompt          = args.get("prompt", "").strip()
+    rel_path        = args.get("path", "").strip()   # 用户指定的保存路径，如 lol_comic/ep02/page_01.png
+    project_id      = args.get("project_id")
+    aspect_ratio    = args.get("aspect_ratio", "9:16")
+    post_id         = args.get("post_id")
+    ref_image_paths = args.get("ref_image_paths") or []   # 参考图绝对路径列表（最多 20 张）
 
     # 有指定 path 时固定生成 1 张，否则按 count
     if rel_path:
@@ -656,6 +670,36 @@ def _tool_generate_image(args: dict) -> list[TextContent]:
 
     if not prompt:
         _err("prompt 不能为空")
+
+    # ── 详细日志：打印接收到的参考图路径 ────────────────────────────
+    ref_log_lines = []
+    ref_log_lines.append(f"[generate_image] 接收到 ref_image_paths 原始值: {repr(args.get('ref_image_paths'))}")
+
+    # ── 校验参考图路径 ────────────────────────────────────────────────
+    if ref_image_paths:
+        if not isinstance(ref_image_paths, list):
+            ref_image_paths = [str(ref_image_paths)]
+        # 只保留存在的文件，最多 20 张
+        valid_refs = []
+        for p in ref_image_paths[:20]:
+            p = str(p).strip()
+            abs_p = os.path.abspath(p)
+            exists = os.path.isfile(abs_p)
+            size_info = f"{os.path.getsize(abs_p)} 字节" if exists else "不存在"
+            log_line = f"  路径: {abs_p} | 存在={exists} | {size_info}"
+            ref_log_lines.append(log_line)
+            logger.info(f"[generate_image] 参考图校验: {log_line}")
+            if exists:
+                valid_refs.append(abs_p)
+            else:
+                logger.warning(f"[generate_image] 参考图不存在，跳过: {abs_p}")
+        ref_image_paths = valid_refs
+        ref_log_lines.append(f"[generate_image] 有效参考图 {len(ref_image_paths)} 张: {ref_image_paths}")
+    else:
+        ref_log_lines.append("[generate_image] 未传入参考图（纯文生图）")
+
+    for line in ref_log_lines:
+        logger.info(line)
 
     # ── 确定保存目录和文件名 ─────────────────────────────────────────
     if rel_path:
@@ -675,6 +719,7 @@ def _tool_generate_image(args: dict) -> list[TextContent]:
         from image.gemini_image import generate_image
         result = generate_image(
             prompt=prompt,
+            ref_image_paths=ref_image_paths if ref_image_paths else None,
             output_dir=output_dir,
             output_filename=output_filename,
             aspect_ratio=aspect_ratio,
@@ -704,13 +749,22 @@ def _tool_generate_image(args: dict) -> list[TextContent]:
         )
         image_ids.append(img_id)
 
+    # ── 汇总参考图日志（返回给 Kimi 可见）───────────────────────────
+    ref_summary = "\n".join(ref_log_lines)
+
     return _ok({
-        "success":      True,
-        "saved_paths":  saved_paths,
-        "image_ids":    image_ids,
-        "count":        len(saved_paths),
-        "aspect_ratio": aspect_ratio,
-        "message":      f"已生成 {len(saved_paths)} 张图片，保存路径: {saved_paths}",
+        "success":         True,
+        "saved_paths":     saved_paths,
+        "image_ids":       image_ids,
+        "count":           len(saved_paths),
+        "aspect_ratio":    aspect_ratio,
+        "ref_images_used": ref_image_paths,
+        "ref_images_count": len(ref_image_paths),
+        "ref_images_log":  ref_summary,
+        "message":         (
+            f"已生成 {len(saved_paths)} 张图片，保存路径: {saved_paths}\n"
+            f"参考图使用情况（共 {len(ref_image_paths)} 张）:\n{ref_summary}"
+        ),
     })
 
 

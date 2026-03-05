@@ -94,6 +94,31 @@ def _build_system_prompt(current_time: str = "", project_context: str = "") -> s
 3. **文件路径规范**：图片存到 `projects/lol_comic/ep02/` 等项目子目录
 4. **错误处理**：工具调用失败时说明原因并尝试替代方案
 
+## 生图时必须使用参考图（IP_REF）
+**每次调用 generate_image 生成漫画角色时，必须传入 ref_image_paths 参数**，固定流程如下：
+
+### 第一步：获取参考图路径（每次生图前必做）
+调用 `list_dir_tree(subdir="IP_REF")` 或 `list_project_files(subdir="IP_REF")`，从返回结果的 `files` 数组中取每个文件的 `abs_path` 字段值。
+- 工具返回的 `size_bytes` 很大（PNG 图片本来就几MB）是**完全正常**的，不代表出错
+- 直接使用 `abs_path` 字段的值（形如 `D:\\...\\IP_REF\\xxx.png`）
+
+### 第二步：按角色匹配参考图
+画面中出现哪个角色，就取对应的 abs_path：
+- 小帕鲁主角 → `xiaopalu_main_character_0.png`
+- 大萌女同事 → `dameng_female_coworker_0.png`
+- 耀耀男同事 → `yaoyao_male_coworker_0.png`
+- 多个角色同框 → 把多个角色的 abs_path 都放入列表
+
+### 第三步：传给 generate_image
+```
+generate_image(
+  prompt="...",
+  ref_image_paths=["D:\\...\\xiaopalu_main_character_0.png", "D:\\...\\dameng_female_coworker_0.png"],
+  ...
+)
+```
+**禁止在 ref_image_paths 为空的情况下生成角色图片**——缺少参考图会导致角色外观与 IP 设定不符。
+
 ## 当前状态
 - 当前时间：{current_time}
 - 项目上下文：{project_context}{skills_section}"""
